@@ -2,4 +2,3 @@ node_modules/
 .env
 package-lock.json
 googleAuth.json
-.DS_Store
