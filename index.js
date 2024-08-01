@@ -4,6 +4,10 @@ import pg from "pg";
 import bcrypt from "bcrypt";
 import env from "dotenv";
 
+import session from "express-session";
+import passport from "passport";
+import {Strategy}  from "passport-local";
+import flash from "express-flash"; 
 
 const app = express();
 const port = 3000;
@@ -14,6 +18,18 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
 app.use(express.json());
 
+app.use(session({
+  secret : process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized:false,
+  cookie: {
+    maxAge: 1000*60 * parseInt(process.env.MAX_AGE),
+  }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+app.use(flash());
 
 const dbConfig = {
   host: process.env.HOST,
@@ -29,12 +45,10 @@ async function generateHash(password) {
 }
 
 async function isUser(email){
-  console.log("checking users");
   const db = new pg.Client(dbConfig);
   try{
     await db.connect();
     const res = await db.query('SELECT * FROM users where email = $1', [email]);
-    console.log(res.rows, res.rows.length);
     return res.rows.length > 0;
 
   } catch(e){
@@ -51,9 +65,9 @@ async function registerUser(email, password){
   try{
     db.connect();
     let hashedPass = await generateHash(password, saltRounds);
-    console.log(hashedPass);
-    await db.query("INSERT INTO users (email, password) values ($1, $2)", [email, hashedPass]);
-    return {status: true};
+    const result = await db.query("INSERT INTO users (email, password) values ($1, $2) RETURNING *", [email, hashedPass]);
+    const newUser = result.rows[0].email;
+    return {newUser: newUser, status: true};
     
   } catch(e){
     console.log(e);
@@ -84,31 +98,45 @@ async function authenticate(email, userPassword){
 }
 
 app.get("/", (req, res) => {
-  res.render("home.ejs");
+  if(req.isAuthenticated()) res.redirect("/secrets");
+  else res.render("home.ejs");
 });
 
 app.get("/login", (req, res) => {
-  res.render("login.ejs");
+  const error = req.flash('error');
+  if(req.isAuthenticated()) res.redirect("/secrets");
+  else res.render("login.ejs", {error: error});
 });
 
 app.get("/register", (req, res) => {
-  res.render("register.ejs");
+  if(req.isAuthenticated()) res.redirect("/secrets");
+  else res.render("register.ejs");
 });
+
+app.get("/secrets", (req,res) => {
+  if(req.isAuthenticated()) res.render("secrets.ejs");
+  else res.redirect("/login");
+})
 
 
 app.post("/register", async (req, res) => {
   let email = req.body.username;
   let pass = req.body.password;
 
-  console.log(pass);
-
   if(await isUser(email)) {
     res.render("register.ejs", {error: "User already exists"});
   } else {
     const result = await registerUser(email, pass);
-    console.log(result);
+    console.log(result.status);
     if(result.status){
-      res.render("login.ejs");
+      req.login(result.newUser, (err) => {
+        if(err) {
+          console.log(err);
+          res.render('register.ejs', { error: 'Registration failed' });
+        } else{
+          res.redirect("/secrets");
+        }
+      })
     } else{
       res.render( "register.ejs", {error: result.error});
     }
@@ -117,17 +145,28 @@ app.post("/register", async (req, res) => {
 
 
 
-app.post("/login",async (req,res) => {
-  const username = req.body.username;
-  const password = req.body.password;
+app.post("/login",passport.authenticate('local', {
+  successRedirect: '/secrets',
+  failureRedirect: '/login',
+  failureFlash: true,
+}));
+
+passport.use(new Strategy(async function (username, password, done) {
   const result = await authenticate(username, password);
-  console.log("login result -> ",result);
 
   if (result.status) {
-    res.render('secrets.ejs');
+    return done(null, username);
   } else {
-    res.render('login.ejs', { message: result.error });
+    return done(null, false, { message: result.error });
   }
+}));
+
+passport.serializeUser((username, done) => {
+  done(null, username);
+});
+
+passport.deserializeUser(async (username, done) => {
+  done(null, username);
 });
 
 app.listen(port, () => {

@@ -20,8 +20,8 @@
             </div>
             <button type="submit" class="btn btn-dark">Login</button>
           </form>
-          <% if (locals.message) { %> 
-            <div class="error"> <%= message %> </div>
+          <% if (locals.error) { %> 
+            <div class="error"> <%= error %> </div>
           <%} %>
         </div>
       </div>
