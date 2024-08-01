@@ -1,12 +1,13 @@
 import express from "express";
 import bodyParser from "body-parser";
-import pg from "pg";
 import bcrypt from "bcrypt";
 import env from "dotenv";
+import pg from "pg";
 
 import session from "express-session";
 import passport from "passport";
 import {Strategy}  from "passport-local";
+import GoogleStrategy from "passport-google-oauth2";
 import flash from "express-flash"; 
 
 const app = express();
@@ -49,11 +50,10 @@ async function isUser(email){
   try{
     await db.connect();
     const res = await db.query('SELECT * FROM users where email = $1', [email]);
-    return res.rows.length > 0;
-
+    return (res.rows.length > 0) ? {status: true, user: res.rows[0]} : {status: false};
   } catch(e){
     console.log(e);
-    return false;
+    return {status: false};
   } finally{
     await db.end();
   }
@@ -78,7 +78,7 @@ async function registerUser(email, password){
 }
 
 async function authenticate(email, userPassword){
-  if(!(await isUser(email))) return {status:false, error: "user doesn't exist"};
+  if(!((await isUser(email)).status)) return {status:false, error: "user doesn't exist"};
 
   const db = new pg.Client(dbConfig);
   try{
@@ -118,12 +118,29 @@ app.get("/secrets", (req,res) => {
   else res.redirect("/login");
 })
 
+app.get("/auth/google", passport.authenticate("google", {
+    scope:["profile", "email"],
+  })
+);
+
+app.get("/auth/google/secrets",passport.authenticate("google", {
+  successRedirect: "/secrets",
+  failureRedirect: "/login",
+}));
+
+
+app.get("/logout", (req,res)=>{
+  req.logout((err) =>{
+    if(err) console.log(err);
+    res.redirect("/");
+  })
+})
 
 app.post("/register", async (req, res) => {
   let email = req.body.username;
   let pass = req.body.password;
 
-  if(await isUser(email)) {
+  if((await isUser(email)).status) {
     res.render("register.ejs", {error: "User already exists"});
   } else {
     const result = await registerUser(email, pass);
@@ -151,7 +168,8 @@ app.post("/login",passport.authenticate('local', {
   failureFlash: true,
 }));
 
-passport.use(new Strategy(async function (username, password, done) {
+passport.use("local", new Strategy(async function (username, password, done) {
+  console.log(username);
   const result = await authenticate(username, password);
 
   if (result.status) {
@@ -168,6 +186,32 @@ passport.serializeUser((username, done) => {
 passport.deserializeUser(async (username, done) => {
   done(null, username);
 });
+
+
+passport.use("google", new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
+  }, async (accessToken, refreshToken, profile, done) => {
+    console.log(profile);
+    try{
+      const User = await isUser(profile.email);
+      if(User.status) {
+        done(null, User.user);
+      } else{
+        const result = await registerUser(profile.email, Date.now().toPrecision() + '' + Math.round(Math.random()*999999));
+        if(result.status){
+          done(null, result.newUser);
+        }else{
+          return done(null, false, { message: result.error });
+        }
+      }
+    } catch(e){
+      done(e);
+    }
+  })
+);
 
 
 app.listen(port, () => {
